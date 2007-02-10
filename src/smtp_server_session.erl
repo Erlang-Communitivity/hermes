@@ -207,7 +207,7 @@ handle_info({tcp, _Sock, FullLine}, State = #session{mode = data}) ->
     handle_data_line(FullLine, State);
 
 handle_info({tcp_closed, _Sock}, State) ->
-    error_logger:warning_msg("SMTP session closed without warning"),
+    %%error_logger:warning_msg("SMTP session closed without warning"),
     {stop, normal, State};
 
 handle_info({tcp_error, _Sock, Reason}, State) ->
