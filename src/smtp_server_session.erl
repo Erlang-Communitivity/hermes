@@ -59,9 +59,9 @@ address_to_mailbox(Address) ->
 
 split_path_from_params(Str) ->
     case regexp:match(Str, "<[^>]*>") of
-	{match, 1, Length} ->
-	    Address = string:substr(Str, 2, Length - 2),
-	    Params = string:strip(string:substr(Str, Length + 1), left),
+	{match, Start, Length} ->
+	    Address = string:substr(Str, Start + 1, Length - 2),
+	    Params = string:strip(string:substr(Str, Start + Length), left),
 	    {address_to_mailbox(Address), Params};
 	_ ->
 	    case httpd_util:split(Str, " ", 2) of
