@@ -23,7 +23,7 @@ accept_and_start(LSock) ->
 
 %---------------------------------------------------------------------------
 
--record(session, {socket, mode, forward_path, data_buffer}).
+-record(session, {socket, mode, reverse_path, forward_path, data_buffer}).
 
 reply_line(Code, Text, false) ->
     [integer_to_list(Code), " ", Text, "\r\n"];
@@ -45,7 +45,8 @@ reply_multi(Code, [Text | More], State = #session{socket = Socket}) ->
     reply_multi(Code, More, State).
 
 reset_buffers(State) ->
-    State#session{forward_path = undefined,
+    State#session{reverse_path = undefined,
+		  forward_path = undefined,
 		  data_buffer = []}.
 
 address_to_mailbox(Address) ->
@@ -102,17 +103,28 @@ handle_command("HELO", _ClientDomain, State) ->
     {noreply, reply(250, ServerDomain ++ " You have reached an SMTP service",
 		    reset_buffers(State))};
 
-handle_command("MAIL", _FromReversePathAndMailParameters, State) ->
-    {noreply, reply(250, "OK",
-		    reset_buffers(State))};
-
-handle_command("RCPT", ToForwardPathAndMailParameters, State) ->
-    case parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
+handle_command("MAIL", FromReversePathAndMailParameters, State) ->
+    case parse_path_and_parameters("[fF][rR][oO][mM]:", FromReversePathAndMailParameters) of
 	unintelligible ->
-	    {noreply, reply(553, "Unintelligible forward-path", State)};
+	    {noreply, reply(553, "Unintelligible reverse-path", State)};
 	{ok, Path, _Params} ->
 	    {noreply, reply(250, "OK",
-			    State#session{forward_path = Path})}
+			    State#session{reverse_path = Path})}
+    end;
+
+handle_command("RCPT", ToForwardPathAndMailParameters,
+	       State = #session{reverse_path = ReversePath}) ->
+    if
+	ReversePath == undefined ->
+	    {noreply, reply(503, "MAIL first", State)};
+	true ->
+	    case parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
+		unintelligible ->
+		    {noreply, reply(553, "Unintelligible forward-path", State)};
+		{ok, Path, _Params} ->
+		    {noreply, reply(250, "OK",
+				    State#session{forward_path = Path})}
+	    end
     end;
 
 handle_command("DATA", _Junk, State = #session{forward_path = Path}) ->
@@ -142,9 +154,10 @@ handle_command("NOOP", _Junk, State) ->
 handle_command(Command, _Data, State) ->
     {noreply, reply(500, "Unsupported command " ++ Command, State)}.
 
-handle_data_line(".\r\n", State = #session{forward_path = ForwardPath,
+handle_data_line(".\r\n", State = #session{reverse_path = ReversePath,
+					   forward_path = ForwardPath,
 					   data_buffer = DataBuffer}) ->
-    {Code, Text} = case deliver(ForwardPath, DataBuffer) of
+    {Code, Text} = case deliver(ReversePath, ForwardPath, DataBuffer) of
 		       ok -> {250, "OK"};
 		       _ -> {554, "Transaction failed"}
 		   end,
@@ -160,17 +173,15 @@ strip_crlf(S) ->
 
 strip_crlf1([$\n, $\r | S]) -> S.
 
-deliver(Mailbox, DataLinesRev) ->
-    io:format("Delivering ~p~n~p~n", [Mailbox, DataLinesRev]),
+deliver(ReversePath, Mailbox, DataLinesRev) ->
+    io:format("Delivering ~p -> ~p~n~p~n", [ReversePath, Mailbox, lists:reverse(DataLinesRev)]),
     ok.
 
 %---------------------------------------------------------------------------
 
 init([Sock]) ->
-    {ok, #session{socket = Sock,
-		  mode = initializing,
-		  forward_path = undefined,
-		  data_buffer = []}}.
+    {ok, reset_buffers(#session{socket = Sock,
+				mode = initializing})}.
 
 terminate(_Reason, #session{socket = Sock}) ->
     gen_tcp:close(Sock),
