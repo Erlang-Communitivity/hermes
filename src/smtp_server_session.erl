@@ -1,27 +1,12 @@
 -module(smtp_server_session).
 %% Somewhat loosely based on rfc 2821.
+%% Doesn't even begin to address rfc 2822 in any serious way.
 
 %% FIXME: SMTP AUTH
 
 -behaviour(gen_server).
 
--export([accept_and_start/1]).
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
-
-accept_and_start(LSock) ->
-    spawn_link(fun () ->
-		       case gen_tcp:accept(LSock) of
-			   {ok, Sock} ->
-			       accept_and_start(LSock),
-			       {ok, Pid} = gen_server:start(?MODULE, [Sock], []),
-			       gen_tcp:controlling_process(Sock, Pid),
-			       gen_server:cast(Pid, socket_control_transferred);
-			   {error, Reason} ->
-			       exit({error, Reason})
-		       end
-	       end).
-
-%---------------------------------------------------------------------------
 
 -record(session, {socket, mode, reverse_path, forward_path, data_buffer}).
 
@@ -193,7 +178,7 @@ code_change(_OldVsn, State, _Extra) ->
 handle_call(Request, _From, State) ->
     {stop, {bad_call, Request}, State}.
 
-handle_cast(socket_control_transferred, State = #session{socket = Sock}) ->
+handle_cast({socket_control_transferred, _Sock}, State = #session{socket = Sock}) ->
     inet:setopts(Sock, [{active, true}]),
     {noreply, reply(220, "Hi there", State#session{mode = command})};
 

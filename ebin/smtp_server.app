@@ -2,6 +2,7 @@
  [{description,"SMTP Server"},
   {vsn, "0.0"},
   {modules,[
+	    generic_tcp_server,
 	    smtp_server,
 	    smtp_server_session
 	   ]},
