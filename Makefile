@@ -34,8 +34,10 @@ debian-package: clean
 test-compile:
 	erlc $(ERLC_OPTS) $(wildcard test/*.erl)
 
+RUN_ERL_CMD=erl -pa ebin -s smtp_server -s pop3_server
+
 run: all
-	erl -pa ebin -s smtp_server
+	$(RUN_ERL_CMD)
 
 run_root: all
-	sudo erl -pa ebin -s smtp_server -smtp_server listen_port 25
+	sudo $(RUN_ERL_CMD) -smtp_server listen_port 25 -pop3_server listen_port 110
