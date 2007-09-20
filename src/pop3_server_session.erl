@@ -165,7 +165,7 @@ do_apop(Name, Digest, Challenge) ->
 	    MyDigest = erlang:md5(Challenge ++ Password),
 	    Width = 8 * size(MyDigest),
 	    <<DigestInt:Width/integer>> = MyDigest,
-	    DigestHex = httpd_util:to_lower(fmt("~*.16.0b", [size(MyDigest) * 2, DigestInt])),
+	    DigestHex = string:to_lower(fmt("~*.16.0b", [size(MyDigest) * 2, DigestInt])),
 	    if
 		DigestHex == Digest ->
 		    ok;
@@ -192,7 +192,7 @@ lookup_message_k(MsgNumStr, State, K) ->
 handle_command_line(Line, State = #session{state = SessionState}) ->
     [Command | Args] = string:tokens(Line, " "),
     io:format("Command: ~p~nState:   ~p~n", [Line, State]),
-    handle_command(httpd_util:to_upper(Command), Args, SessionState, State).
+    handle_command(string:to_upper(Command), Args, SessionState, State).
 
 handle_command("APOP", [Name, Digest], authorization, State = #session{challenge = Challenge}) ->
     case do_apop(Name, Digest, Challenge) of

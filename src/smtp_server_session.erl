@@ -69,8 +69,8 @@ parse_path_and_parameters(PrefixRegexp, Data) ->
 
 handle_command_line(Line, State) ->
     {Command, Data} = case httpd_util:split(Line, " ", 2) of
-			  {ok, [C]} -> {httpd_util:to_upper(C), ""};
-			  {ok, [C, D]} -> {httpd_util:to_upper(C), D}
+			  {ok, [C]} -> {string:to_upper(C), ""};
+			  {ok, [C, D]} -> {string:to_upper(C), D}
 		      end,
     handle_command(Command, Data, State).
 
