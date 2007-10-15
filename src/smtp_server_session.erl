@@ -230,13 +230,17 @@ have_complained_about(Key) ->
 
 verify(VerificationCallback, ReversePath, ForwardPaths) ->
     case catch VerificationCallback(ReversePath, ForwardPaths) of
-	{'EXIT', _Reason} -> callback_failure;
+	{'EXIT', Reason} ->
+	    error_logger:error_msg("SMTP verification callback failed: ~p", [Reason]),
+	    callback_failure;
 	Result -> Result
     end.
 
 deliver(DeliveryCallback, ReversePath, Mailboxes, DataLinesRev) ->
     case catch DeliveryCallback(ReversePath, Mailboxes, lists:reverse(DataLinesRev)) of
-	{'EXIT', _Reason} -> callback_failure;
+	{'EXIT', Reason} ->
+	    error_logger:error_msg("SMTP delivery callback failed: ~p", [Reason]),
+	    callback_failure;
 	Result -> Result
     end.
 
