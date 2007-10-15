@@ -33,7 +33,8 @@
 
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
 
--record(session, {socket, mode, reverse_path, forward_path, data_buffer}).
+-record(session, {socket, mode, reverse_path, forward_paths, data_buffer,
+		  verification_callback, delivery_callback}).
 
 reply_line(Code, Text, false) ->
     [integer_to_list(Code), " ", Text, "\r\n"];
@@ -56,13 +57,13 @@ reply_multi(Code, [Text | More], State = #session{socket = Socket}) ->
 
 reset_buffers(State) ->
     State#session{reverse_path = undefined,
-		  forward_path = undefined,
+		  forward_paths = [],
 		  data_buffer = []}.
 
-address_to_mailbox(Address) ->
+address_to_path(Address) ->
     case regexp:match(Address, "[^@]+@") of
 	{match, 1, Length} ->
-	    string:substr(Address, 1, Length - 1);
+	    {string:substr(Address, 1, Length - 1), string:substr(Address, Length + 1)};
 	_ ->
 	    Address
     end.
@@ -72,13 +73,13 @@ split_path_from_params(Str) ->
 	{match, Start, Length} ->
 	    Address = string:substr(Str, Start + 1, Length - 2),
 	    Params = string:strip(string:substr(Str, Start + Length), left),
-	    {address_to_mailbox(Address), Params};
+	    {address_to_path(Address), Params};
 	_ ->
 	    case httpd_util:split(Str, " ", 2) of
 		{ok, [Address]} ->
-		    {address_to_mailbox(Address), ""};
+		    {address_to_path(Address), ""};
 		{ok, [Address, Params]} ->
-		    {address_to_mailbox(Address), Params}
+		    {address_to_path(Address), Params}
 	    end
     end.
 
@@ -123,7 +124,9 @@ handle_command("MAIL", FromReversePathAndMailParameters, State) ->
     end;
 
 handle_command("RCPT", ToForwardPathAndMailParameters,
-	       State = #session{reverse_path = ReversePath}) ->
+	       State = #session{reverse_path = ReversePath,
+				forward_paths = ForwardPaths,
+				verification_callback = VerificationCallback}) ->
     if
 	ReversePath == undefined ->
 	    {noreply, reply(503, "MAIL first", State)};
@@ -132,14 +135,22 @@ handle_command("RCPT", ToForwardPathAndMailParameters,
 		unintelligible ->
 		    {noreply, reply(553, "Unintelligible forward-path", State)};
 		{ok, Path, _Params} ->
-		    {noreply, reply(250, "OK",
-				    State#session{forward_path = Path})}
+		    NewForwardPaths = [Path | ForwardPaths],
+		    case verify(VerificationCallback, ReversePath, NewForwardPaths) of
+			ok ->
+			    {noreply, reply(250, "OK",
+					    State#session{forward_paths = NewForwardPaths})};
+			_ ->
+			    {noreply, reply(550, io_lib:format("Unacceptable recipient ~p",
+							       [Path]),
+					    State)}
+		    end
 	    end
     end;
 
-handle_command("DATA", _Junk, State = #session{forward_path = Path}) ->
+handle_command("DATA", _Junk, State = #session{forward_paths = ForwardPaths}) ->
     if
-	Path == undefined ->
+	ForwardPaths == [] ->
 	    {noreply, reply(503, "RCPT first", State)};
 	true ->
 	    {noreply, reply(354, "Go ahead", State#session{mode = data})}
@@ -165,33 +176,79 @@ handle_command(Command, _Data, State) ->
     {noreply, reply(500, "Unsupported command " ++ Command, State)}.
 
 handle_data_line(".\r\n", State = #session{reverse_path = ReversePath,
-					   forward_path = ForwardPath,
-					   data_buffer = DataBuffer}) ->
-    {Code, Text} = case deliver(ReversePath, ForwardPath, DataBuffer) of
+					   forward_paths = ForwardPaths,
+					   data_buffer = DataBuffer,
+					   delivery_callback = DeliveryCallback}) ->
+    {Code, Text} = case deliver(DeliveryCallback, ReversePath, ForwardPaths, DataBuffer) of
 		       ok -> {250, "OK"};
 		       _ -> {554, "Transaction failed"}
 		   end,
     {noreply, reply(Code, Text,
 		    reset_buffers(State#session{mode = command}))};
-handle_data_line("." ++ Line, State = #session{data_buffer = Buffer}) ->
-    {noreply, State#session{data_buffer = [Line | Buffer]}};
-handle_data_line(Line, State = #session{data_buffer = Buffer}) ->
+handle_data_line("." ++ Line, State) ->
+    case Line of
+	"\n" ->
+	    case have_complained_about(improper_line_ending) of
+		true ->
+		    %% Reasonable guess, perhaps, to permit this.
+		    handle_data_line(".\r\n", State);
+		_ ->
+		    accumulate_line(Line, State)
+	    end;
+	_ ->
+	    accumulate_line(Line, State)
+    end;
+handle_data_line(Line, State) ->
+    accumulate_line(Line, State).
+
+accumulate_line(Line, State = #session{data_buffer = Buffer}) ->
     {noreply, State#session{data_buffer = [Line | Buffer]}}.
 
 strip_crlf(S) ->
     lists:reverse(strip_crlf1(lists:reverse(S))).
 
-strip_crlf1([$\n, $\r | S]) -> S.
+strip_crlf1([$\n, $\r | S]) -> S;
+strip_crlf1([$\n | S]) ->
+    complain(improper_line_ending, "Improper line ending detected."),
+    S.
 
-deliver(ReversePath, Mailbox, DataLinesRev) ->
-    io:format("Delivering ~p -> ~p~n~p~n", [ReversePath, Mailbox, lists:reverse(DataLinesRev)]),
-    ok.
+complain(Key, Message) ->
+    case have_complained_about(Key) of
+	true ->
+	    ok;
+	_ ->
+	    error_logger:warning_msg("SMTP complaint: ~p~n", [Message]),
+	    put({complained_about, Key}, true),
+	    ok
+    end.
+
+have_complained_about(Key) ->
+    case get({complained_about, Key}) of
+	undefined -> false;
+	_ -> true
+    end.
+
+verify(VerificationCallback, ReversePath, ForwardPaths) ->
+    case catch VerificationCallback(ReversePath, ForwardPaths) of
+	{'EXIT', _Reason} -> callback_failure;
+	Result -> Result
+    end.
+
+deliver(DeliveryCallback, ReversePath, Mailboxes, DataLinesRev) ->
+    case catch DeliveryCallback(ReversePath, Mailboxes, lists:reverse(DataLinesRev)) of
+	{'EXIT', _Reason} -> callback_failure;
+	Result -> Result
+    end.
 
 %---------------------------------------------------------------------------
 
-init([Sock]) ->
+init([Sock, DeliveryCallback]) ->
+    init([Sock, DeliveryCallback, none]);
+init([Sock, DeliveryCallback, VerificationCallback]) ->
     {ok, reset_buffers(#session{socket = Sock,
-				mode = initializing})}.
+				mode = initializing,
+				delivery_callback = DeliveryCallback,
+				verification_callback = VerificationCallback})}.
 
 terminate(_Reason, #session{socket = Sock}) ->
     gen_tcp:close(Sock),

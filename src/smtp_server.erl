@@ -38,7 +38,17 @@ start(normal, []) ->
 				   {active, false},
 				   {packet, line},
 				   {reuseaddr, true}],
-				  []).
+				  [fun log_delivery/3,
+				   fun log_new_rcpt/2]).
 
 stop(_State) ->
+    ok.
+
+log_new_rcpt(_ReversePath, [Rcpt | _Rest]) ->
+    io:format("New recipient: ~p~n", [Rcpt]),
+    ok.
+
+log_delivery(ReversePath, ForwardPaths, DataLines) ->
+    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n",
+	      [ReversePath, ForwardPaths, DataLines]),
     ok.
