@@ -186,47 +186,12 @@ handle_data_line(".\r\n", State = #session{reverse_path = ReversePath,
     {noreply, reply(Code, Text,
 		    reset_buffers(State#session{mode = command}))};
 handle_data_line("." ++ Line, State) ->
-    case Line of
-	"\n" ->
-	    case have_complained_about(improper_line_ending) of
-		true ->
-		    %% Reasonable guess, perhaps, to permit this.
-		    handle_data_line(".\r\n", State);
-		_ ->
-		    accumulate_line(Line, State)
-	    end;
-	_ ->
-	    accumulate_line(Line, State)
-    end;
+    accumulate_line(Line, State);
 handle_data_line(Line, State) ->
     accumulate_line(Line, State).
 
 accumulate_line(Line, State = #session{data_buffer = Buffer}) ->
     {noreply, State#session{data_buffer = [Line | Buffer]}}.
-
-strip_crlf(S) ->
-    lists:reverse(strip_crlf1(lists:reverse(S))).
-
-strip_crlf1([$\n, $\r | S]) -> S;
-strip_crlf1([$\n | S]) ->
-    complain(improper_line_ending, "Improper line ending detected."),
-    S.
-
-complain(Key, Message) ->
-    case have_complained_about(Key) of
-	true ->
-	    ok;
-	_ ->
-	    error_logger:warning_msg("SMTP complaint: ~p~n", [Message]),
-	    put({complained_about, Key}, true),
-	    ok
-    end.
-
-have_complained_about(Key) ->
-    case get({complained_about, Key}) of
-	undefined -> false;
-	_ -> true
-    end.
 
 verify(VerificationCallback, ReversePath, ForwardPaths) ->
     case catch VerificationCallback(ReversePath, ForwardPaths) of
@@ -272,7 +237,7 @@ handle_cast(Request, State) ->
     {stop, {bad_cast, Request}, State}.
 
 handle_info({tcp, _Sock, FullLine}, State = #session{mode = command}) ->
-    handle_command_line(strip_crlf(FullLine), State);
+    handle_command_line(smtp_util:strip_crlf(FullLine), State);
 
 handle_info({tcp, _Sock, FullLine}, State = #session{mode = data}) ->
     handle_data_line(FullLine, State);
