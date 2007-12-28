@@ -27,6 +27,9 @@
 
 -export([start/0, stop/0, start/2, stop/1]).
 
+%% Callbacks.
+-export([log_delivery/3, log_new_rcpt/2]).
+
 start() -> application:start(?MODULE).
 stop() -> application:stop(?MODULE).
 
@@ -38,8 +41,8 @@ start(normal, []) ->
 				   {active, false},
 				   {packet, line},
 				   {reuseaddr, true}],
-				  [fun log_delivery/3,
-				   fun log_new_rcpt/2]).
+				  [{?MODULE, log_delivery, []},
+				   {?MODULE, log_new_rcpt, []}]).
 
 stop(_State) ->
     ok.

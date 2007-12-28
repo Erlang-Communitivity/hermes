@@ -193,16 +193,16 @@ handle_data_line(Line, State) ->
 accumulate_line(Line, State = #session{data_buffer = Buffer}) ->
     {noreply, State#session{data_buffer = [Line | Buffer]}}.
 
-verify(VerificationCallback, ReversePath, ForwardPaths) ->
-    case catch VerificationCallback(ReversePath, ForwardPaths) of
+verify({M,F,A}, ReversePath, ForwardPaths) ->
+    case catch apply(M, F, [ReversePath, ForwardPaths | A]) of
 	{'EXIT', Reason} ->
 	    error_logger:error_msg("SMTP verification callback failed: ~p", [Reason]),
 	    callback_failure;
 	Result -> Result
     end.
 
-deliver(DeliveryCallback, ReversePath, Mailboxes, DataLinesRev) ->
-    case catch DeliveryCallback(ReversePath, Mailboxes, lists:reverse(DataLinesRev)) of
+deliver({M,F,A}, ReversePath, Mailboxes, DataLinesRev) ->
+    case catch apply(M, F, [ReversePath, Mailboxes, lists:reverse(DataLinesRev) | A]) of
 	{'EXIT', Reason} ->
 	    error_logger:error_msg("SMTP delivery callback failed: ~p", [Reason]),
 	    callback_failure;
