@@ -52,6 +52,7 @@ log_new_rcpt(_ReversePath, [Rcpt | _Rest]) ->
     ok.
 
 log_delivery(ReversePath, ForwardPaths, DataLines) ->
+    Message = rfc2822:parse(DataLines),
     io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n",
-	      [ReversePath, ForwardPaths, DataLines]),
+	      [ReversePath, ForwardPaths, Message]),
     ok.
