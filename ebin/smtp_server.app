@@ -9,5 +9,5 @@
   {applications,[kernel,stdlib]},
   {mod, {smtp_server, []}},
   {env, [{listen_host, "0.0.0.0"},
-	 {listen_port, 8025}]}
+	 {listen_port, 25}]}
  ]}.
