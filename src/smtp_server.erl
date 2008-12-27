@@ -36,13 +36,16 @@ stop() -> application:stop(?MODULE).
 start(normal, []) ->
     {ok, Host} = application:get_env(listen_host),
     {ok, Port} = application:get_env(listen_port),
+    {ok, Domain} = application:get_env(listen_domain),
     generic_tcp_server:start_link(smtp_server_session, Host, Port,
 				  [list,
 				   {active, false},
 				   {packet, line},
 				   {reuseaddr, true}],
 				  [{?MODULE, log_delivery, []},
-				   {?MODULE, log_new_rcpt, []}]).
+				   {?MODULE, log_new_rcpt, []},
+				   Domain
+				  ]).
 
 stop(_State) ->
     ok.

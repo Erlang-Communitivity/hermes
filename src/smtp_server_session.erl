@@ -34,7 +34,7 @@
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(session, {socket, mode, reverse_path, forward_paths, data_buffer,
-		  verification_callback, delivery_callback}).
+		  verification_callback, delivery_callback, domain}).
 
 reply_line(Code, Text, false) ->
     [integer_to_list(Code), " ", Text, "\r\n"];
@@ -105,12 +105,12 @@ handle_command("QUIT", _ClientDomain, State) ->
 			 reset_buffers(State))};
 
 handle_command("EHLO", _ClientDomain, State) ->
-    ServerDomain = "bogus.smtp.server.domain", %% FIXME
+    ServerDomain = State#session.domain, 
     {noreply, reply(250, ServerDomain ++ " You have reached an SMTP service",
 		    reset_buffers(State))};
 
 handle_command("HELO", _ClientDomain, State) ->
-    ServerDomain = "bogus.smtp.server.domain", %% FIXME
+    ServerDomain = State#session.domain, 
     {noreply, reply(250, ServerDomain ++ " You have reached an SMTP service",
 		    reset_buffers(State))};
 
@@ -211,13 +211,14 @@ deliver({M,F,A}, ReversePath, Mailboxes, DataLinesRev) ->
 
 %---------------------------------------------------------------------------
 
-init([Sock, DeliveryCallback]) ->
-    init([Sock, DeliveryCallback, none]);
-init([Sock, DeliveryCallback, VerificationCallback]) ->
+init([Sock, DeliveryCallback, Domain]) ->
+    init([Sock, DeliveryCallback, none, Domain]);
+init([Sock, DeliveryCallback, VerificationCallback, Domain]) ->
     {ok, reset_buffers(#session{socket = Sock,
 				mode = initializing,
 				delivery_callback = DeliveryCallback,
-				verification_callback = VerificationCallback})}.
+				verification_callback = VerificationCallback,
+				domain = Domain})}.
 
 terminate(_Reason, #session{socket = Sock}) ->
     gen_tcp:close(Sock),

@@ -40,4 +40,4 @@ run: all
 	$(RUN_ERL_CMD)
 
 run_root: all
-	sudo $(RUN_ERL_CMD) -smtp_server listen_port 25 -pop3_server listen_port 110
+	sudo $(RUN_ERL_CMD) -smtp_server listen_port 25 
