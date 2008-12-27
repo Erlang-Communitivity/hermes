@@ -34,7 +34,7 @@ debian-package: clean
 test-compile:
 	erlc $(ERLC_OPTS) $(wildcard test/*.erl)
 
-RUN_ERL_CMD=erl -pa ebin -s smtp_server -s pop3_server
+RUN_ERL_CMD=erl -pa ebin -s smtp_server 
 
 run: all
 	$(RUN_ERL_CMD)
