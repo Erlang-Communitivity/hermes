@@ -30,10 +30,24 @@
 %% Callbacks.
 -export([log_delivery/3, log_new_rcpt/2]).
 
-start() -> application:start(?MODULE).
-stop() -> application:stop(?MODULE).
+-include("couch_db.hrl").
+
+-define(DBNAME, "maildb").
+-define(DATADIR, "./data").
+-define(PORT, 6000).
+
+start() -> 
+	application:start(?MODULE).
+	
+stop() -> 
+	application:stop(?MODULE),
+	application:stop(couch).
 
 start(normal, []) ->
+	application:load(couch),
+	application:set_env(couch, {"Couch","DbRootDir"}, ?DATADIR),
+	application:set_env(couch, {"Couch","Port"}, ?PORT),
+	couch_server:start(),
     {ok, Host} = application:get_env(listen_host),
     {ok, Port} = application:get_env(listen_port),
     {ok, Domain} = application:get_env(listen_domain),
@@ -55,7 +69,26 @@ log_new_rcpt(_ReversePath, [Rcpt | _Rest]) ->
     ok.
 
 log_delivery(ReversePath, ForwardPaths, DataLines) ->
-    Message = rfc2822:parse(DataLines),
-    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n",
-	      [ReversePath, ForwardPaths, Message]),
+    {rfc2822, Headers, BodyLines} = Message = rfc2822:parse(DataLines),
+    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n", [ReversePath, ForwardPaths, Message]),
+	{ok, Db} = couchdb_embedded:dbopen(?DBNAME, initial_docs()),
+	MailDocBody = {obj, Headers ++ [{body, list_to_tuple(BodyLines)}]},
+	MailDoc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = MailDocBody},
+	Options = [],
+	couch_db:save_docs(Db, [MailDoc], Options),
     ok.
+	
+initial_docs() ->
+	[
+		create_user_doc("Bill Barnhill", {"bill.barnhill@communitivity.com"}, {"admin","user"})
+		
+	].
+	
+create_user_doc(Name, EmailAddresses, Roles) ->
+	#doc{id = couch_util:new_uuid(), revs = ["0"], body = {obj, [
+		{"username", Name},
+		{"addresses", EmailAddresses},
+		{"added", erlang:universaltime() },
+		{"roles", Roles}
+	]}}.
+	
