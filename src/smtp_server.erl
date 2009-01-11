@@ -26,9 +26,7 @@
 -module(smtp_server).
 
 -export([start/0, stop/0, start/2, stop/1]).
-
-%% Callbacks.
--export([log_delivery/3, log_new_rcpt/2]).
+-export([add_user/3, populate_db/0, doc_for_address/1]).
 
 -include("couch_db.hrl").
 
@@ -40,14 +38,15 @@ start() ->
 	application:start(?MODULE).
 	
 stop() -> 
-	application:stop(?MODULE),
-	application:stop(couch).
+	application:stop(?MODULE).
+	%%application:stop(couch).
 
 start(normal, []) ->
-	application:load(couch),
-	application:set_env(couch, {"Couch","DbRootDir"}, ?DATADIR),
-	application:set_env(couch, {"Couch","Port"}, ?PORT),
-	couch_server:start(),
+	%%application:load(couch),
+	%%application:set_env(couch, {"Couch","DbRootDir"}, ?DATADIR),
+	%%application:set_env(couch, {"Couch","Port"}, ?PORT),
+	%%couch_server:start(),
+	couch_embedded:start(),
     {ok, Host} = application:get_env(listen_host),
     {ok, Port} = application:get_env(listen_port),
     {ok, Domain} = application:get_env(listen_domain),
@@ -56,39 +55,59 @@ start(normal, []) ->
 				   {active, false},
 				   {packet, line},
 				   {reuseaddr, true}],
-				  [{?MODULE, log_delivery, []},
-				   {?MODULE, log_new_rcpt, []},
-				   Domain
-				  ]).
+				  [ [logging_smtp_handler, storing_smtp_handler], Domain ]
+				).
 
 stop(_State) ->
     ok.
 
-log_new_rcpt(_ReversePath, [Rcpt | _Rest]) ->
-    io:format("New recipient: ~p~n", [Rcpt]),
-    ok.
-
-log_delivery(ReversePath, ForwardPaths, DataLines) ->
-    {rfc2822, Headers, BodyLines} = Message = rfc2822:parse(DataLines),
-    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n", [ReversePath, ForwardPaths, Message]),
-	{ok, Db} = couchdb_embedded:dbopen(?DBNAME, initial_docs()),
-	MailDocBody = {obj, Headers ++ [{body, list_to_tuple(BodyLines)}]},
-	MailDoc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = MailDocBody},
-	Options = [],
-	couch_db:save_docs(Db, [MailDoc], Options),
-    ok.
-	
-initial_docs() ->
-	[
-		create_user_doc("Bill Barnhill", {"bill.barnhill@communitivity.com"}, {"admin","user"})
-		
-	].
-	
-create_user_doc(Name, EmailAddresses, Roles) ->
-	#doc{id = couch_util:new_uuid(), revs = ["0"], body = {obj, [
+add_user(Name, Address, Roles) ->
+	RolesJson = list_to_tuple(Roles),
+	AddressesJson = {Address},
+	%% FIXME Should check for duplicates here!
+	Doc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = {obj, [
+		{"type", "user"},
 		{"username", Name},
-		{"addresses", EmailAddresses},
+		{"addresses", AddressesJson},
 		{"added", erlang:universaltime() },
-		{"roles", Roles}
-	]}}.
+		{"roles", RolesJson}
+	]}},
+	{ok, Db} = couch_embedded:dbopen(?DBNAME, []),
+	couch_db:save_docs(Db, [Doc], []).
+	
+populate_db() ->
+	add_user("Bill Barnhill", {"bill.barnhill","communitivity.com"}, ["admin", "user"]).
+	
+
+doc_for_address({Userid, Domain} = Address) ->
+	{ok, Db} = couch_embedded:dbopen(?DBNAME, []),
+	Map_Fn = fun (#full_doc_info{id=Id}=Info, _Offset, Acc) ->
+		case Acc of
+			none -> 
+				{ok, #doc{body={obj, Fields}}} = {ok, Doc} = couch_db:open_doc(Db, Id),
+				case proplists:get_value("type", Fields, none) of
+					"user" ->
+						Addresses = tuple_to_list(proplists:get_value("addresses", Fields, {})),
+						case lists:member(Address, Addresses) of
+							true -> {ok, Doc};
+							false -> {ok, none}
+						end;
+					_Other -> {ok, none}
+				end;
+			Doc -> {ok, Doc}
+		end
+	end,
+	couch_db:enum_docs(Db, 0, Map_Fn, none).
+
+	
+%%log_delivery(ReversePath, ForwardPaths, DataLines) ->
+%%    {rfc2822, Headers, BodyLines} = Message = rfc2822:parse(DataLines),
+%%    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n", [ReversePath, ForwardPaths, Message]),
+%%	{ok, Db} = couchdb_embedded:dbopen(?DBNAME, initial_docs()),
+%%	MailDocBody = {obj, Headers ++ [{body, list_to_tuple(BodyLines)}]},
+%%	MailDoc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = MailDocBody},
+%%	Options = [],
+%%	couch_db:save_docs(Db, [MailDoc], Options),
+%%  ok.
+	
 	

@@ -33,8 +33,7 @@
 
 -export([init/1, terminate/2, code_change/3, handle_call/3, handle_cast/2, handle_info/2]).
 
--record(session, {socket, mode, reverse_path, forward_paths, data_buffer,
-		  verification_callback, delivery_callback, domain}).
+-record(session, {socket, mode, reverse_path, forward_paths, data_buffer,domain}).
 
 reply_line(Code, Text, false) ->
     [integer_to_list(Code), " ", Text, "\r\n"];
@@ -45,16 +44,11 @@ reply(Code, Text, State = #session{socket = Socket}) ->
     gen_tcp:send(Socket, reply_line(Code, Text, false)),
     State.
 
-reply_multi(Code, [], State = #session{socket = Socket}) ->
-    gen_tcp:send(Socket, reply_line(Code, "nothing to see here, move along", false)),
-    State;
-reply_multi(Code, [Text], State = #session{socket = Socket}) ->
-    gen_tcp:send(Socket, reply_line(Code, Text, false)),
-    State;
-reply_multi(Code, [Text | More], State = #session{socket = Socket}) ->
-    gen_tcp:send(Socket, reply_line(Code, Text, true)),
-    reply_multi(Code, More, State).
-
+reply_fn_for_socket(Socket) ->
+	fun (Code, Text) -> 
+		gen_tcp:send(Socket, [integer_to_list(Code), " ", Text, "\r\n"])
+	end.
+	
 reset_buffers(State) ->
     State#session{reverse_path = undefined,
 		  forward_paths = [],
@@ -93,6 +87,50 @@ parse_path_and_parameters(PrefixRegexp, Data) ->
 	    {ok, Path, Params}
     end.
 
+%% refactor out call_handler func to be seaprate, see if we get beter bbug that way
+
+
+%% event handler should return true if verified, false otherwise
+verify_with_handlers(ReversePath, Path, Handlers) ->
+	error_logger:info_msg("+verify_with_handlers/3 ~p, ~p, ~p", [ReversePath, Path, Handlers]),
+	lists:foldl(
+		fun (Handler, Acc) ->
+			error_logger:info_msg("Called with ~p, ~p", [Handler, Acc]),
+			case Acc of
+				false -> false;
+				true ->
+					Request = {verify, ReversePath, Path},
+					Result = gen_event:call(?MODULE, Handler, Request),
+					error_logger:info_msg("Called Handler with ~p and result of ~p", [Request, Result]),
+					Result
+			end
+		end,
+		true, Handlers).
+	
+
+%% Event handler should return either
+%%	 {ok, {ReversePath, MailBoxes, DataLines}}
+%% or
+%%   {error, Reason}
+%%
+deliver_to_handlers(ReversePath, ForwardPaths, DataLines, Handlers) ->
+	error_logger:info_msg("+deliver_to_handlers/3 ~p, ~p, ~p", [ReversePath, ForwardPaths, DataLines]),
+	lists:foldl(
+		fun (Handler, Request) ->
+			error_logger:info_msg("Called with ~p, ~p", [Handler, Request]),
+			case Request of
+				{ok, {deliver, _NextReversePath, _NextForwardPaths, _NextDataLines} = NextRequest} ->
+					Result = gen_event:call(?MODULE, Handler, NextRequest),
+					error_logger:info_msg("Called Handler with ~p and result of ~p", [NextRequest, Result]),
+					Result;
+				{error, Reason} ->
+					{error, Reason}
+			end
+		end,
+		{ok, {deliver, ReversePath, ForwardPaths, DataLines}}, 
+		Handlers).
+
+
 handle_command_line(Line, State) ->
     {Command, Data} = case httpd_util:split(Line, " ", 2) of
 			  {ok, [C]} -> {string:to_upper(C), ""};
@@ -122,30 +160,33 @@ handle_command("MAIL", FromReversePathAndMailParameters, State) ->
 	    {noreply, reply(250, "OK",
 			    State#session{reverse_path = Path})}
     end;
+	
 
 handle_command("RCPT", ToForwardPathAndMailParameters,
-	       State = #session{reverse_path = ReversePath,
-				forward_paths = ForwardPaths,
-				verification_callback = VerificationCallback}) ->
+	       State = #session{reverse_path = ReversePath,	forward_paths = ForwardPaths}) ->
     if
-	ReversePath == undefined ->
-	    {noreply, reply(503, "MAIL first", State)};
-	true ->
-	    case parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
-		unintelligible ->
-		    {noreply, reply(553, "Unintelligible forward-path", State)};
-		{ok, Path, _Params} ->
-		    NewForwardPaths = [Path | ForwardPaths],
-		    case verify(VerificationCallback, ReversePath, NewForwardPaths) of
-			ok ->
-			    {noreply, reply(250, "OK",
-					    State#session{forward_paths = NewForwardPaths})};
-			_ ->
-			    {noreply, reply(550, io_lib:format("Unacceptable recipient ~p",
-							       [Path]),
-					    State)}
-		    end
-	    end
+		ReversePath == undefined ->
+	    	{noreply, reply(503, "MAIL first", State)};
+		true ->
+	    	case parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
+				unintelligible ->
+		    		{noreply, reply(553, "Unintelligible forward-path", State)};
+				{ok, Path, _Params} ->
+					%% Quirk in gen_event..handlers returned in reverse order added
+					Handlers = lists:reverse(gen_event:which_handlers(?MODULE)),
+					Verified = verify_with_handlers(ReversePath, Path, Handlers),
+					case Verified of
+						true ->
+							NextState = State#session{forward_paths = [Path | ForwardPaths]},
+			    			{noreply, reply(250, "OK", NextState)};
+						false ->
+							{User, Domain} = Path,
+			    			ErrMsg = io_lib:format("Unacceptable recipient ~s", [User++"@"++Domain]),
+							{noreply, reply(550, ErrMsg, State)};
+						Other -> exit("Unknown verify_with_handlers return: ~p", [Other])
+					end;
+				OuterOther -> exit("Unknown parse_path_and_parameters return: ~p", [OuterOther])
+	    	end
     end;
 
 handle_command("DATA", _Junk, State = #session{forward_paths = ForwardPaths}) ->
@@ -177,14 +218,13 @@ handle_command(Command, _Data, State) ->
 
 handle_data_line(".\r\n", State = #session{reverse_path = ReversePath,
 					   forward_paths = ForwardPaths,
-					   data_buffer = DataBuffer,
-					   delivery_callback = DeliveryCallback}) ->
-    {Code, Text} = case deliver(DeliveryCallback, ReversePath, ForwardPaths, DataBuffer) of
-		       ok -> {250, "OK"};
-		       _ -> {554, "Transaction failed"}
-		   end,
-    {noreply, reply(Code, Text,
-		    reset_buffers(State#session{mode = command}))};
+					   data_buffer = DataBuffer}) ->
+	Handlers = lists:reverse(gen_event:which_handlers(?MODULE)),
+	{Code, Text} = case deliver_to_handlers(ReversePath, ForwardPaths, lists:reverse(DataBuffer), Handlers) of
+						{ok, _Result} -> {250, "OK"};
+						{error, Reason} -> {554, "Transaction Failed -" ++ Reason}
+					end,
+	{noreply, reply(Code, Text, reset_buffers(State#session{mode = command}))};
 handle_data_line("." ++ Line, State) ->
     accumulate_line(Line, State);
 handle_data_line(Line, State) ->
@@ -192,14 +232,6 @@ handle_data_line(Line, State) ->
 
 accumulate_line(Line, State = #session{data_buffer = Buffer}) ->
     {noreply, State#session{data_buffer = [Line | Buffer]}}.
-
-verify({M,F,A}, ReversePath, ForwardPaths) ->
-    case catch apply(M, F, [ReversePath, ForwardPaths | A]) of
-	{'EXIT', Reason} ->
-	    error_logger:error_msg("SMTP verification callback failed: ~p", [Reason]),
-	    callback_failure;
-	Result -> Result
-    end.
 
 deliver({M,F,A}, ReversePath, Mailboxes, DataLinesRev) ->
     case catch apply(M, F, [ReversePath, Mailboxes, lists:reverse(DataLinesRev) | A]) of
@@ -209,16 +241,24 @@ deliver({M,F,A}, ReversePath, Mailboxes, DataLinesRev) ->
 	Result -> Result
     end.
 
+add_handler(Module) ->
+  gen_event:add_handler(?MODULE, Module, []).
+
+notify(Event) ->
+  gen_event:notify(?MODULE, Event).
+
 %---------------------------------------------------------------------------
 
-init([Sock, DeliveryCallback, Domain]) ->
-    init([Sock, DeliveryCallback, none, Domain]);
-init([Sock, DeliveryCallback, VerificationCallback, Domain]) ->
-    {ok, reset_buffers(#session{socket = Sock,
+init([Sock, Handlers, Domain]) ->
+	gen_event:start_link({local, ?MODULE}),
+	lists:map(fun add_handler/1, Handlers),
+	Session = new_session(Sock, Domain),
+    {ok, reset_buffers(Session)}.
+				
+new_session(Sock, Domain) ->
+	#session{socket = Sock,
 				mode = initializing,
-				delivery_callback = DeliveryCallback,
-				verification_callback = VerificationCallback,
-				domain = Domain})}.
+				domain = Domain}.
 
 terminate(_Reason, #session{socket = Sock}) ->
     gen_tcp:close(Sock),
