@@ -1,0 +1,12 @@
+{application, hermes_core,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {modules, [c2, generic_tcp_server, rfc8222]},
+  {env, []}
+ ]}.

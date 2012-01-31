@@ -1,0 +1,12 @@
+{application, hermes,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { hermes_app, []}},
+  {env, []}
+ ]}.
