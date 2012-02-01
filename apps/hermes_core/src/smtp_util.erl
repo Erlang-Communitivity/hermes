@@ -25,7 +25,45 @@
 
 -module(smtp_util).
 
--export([strip_crlf/1]).
+-export([
+	 strip_crlf/1,
+	 address_to_path/1,
+	 split_path_from_params/1,
+	 parse_path_and_parameters/2
+	]).
+
+address_to_path(Address) ->
+    case regexp:match(Address, "[^@]+@") of
+	{match, 1, Length} ->
+	    {string:substr(Address, 1, Length - 1), string:substr(Address, Length + 1)};
+	_ ->
+	    Address
+    end.
+
+split_path_from_params(Str) ->
+    case regexp:match(Str, "<[^>]*>") of
+	{match, Start, Length} ->
+	    Address = string:substr(Str, Start + 1, Length - 2),
+	    Params = string:strip(string:substr(Str, Start + Length), left),
+	    {address_to_path(Address), Params};
+	_ ->
+	    case httpd_util:split(Str, " ", 2) of
+		{ok, [Address]} ->
+		    {address_to_path(Address), ""};
+		{ok, [Address, Params]} ->
+		    {address_to_path(Address), Params}
+	    end
+    end.
+
+parse_path_and_parameters(PrefixRegexp, Data) ->
+    case regexp:first_match(Data, PrefixRegexp) of
+	nomatch ->
+	    unintelligible;
+	{match, 1, Length} ->
+	    PathAndParams = string:strip(string:substr(Data, Length + 1), left),
+	    {Path, Params} = split_path_from_params(PathAndParams),
+	    {ok, Path, Params}
+    end.
 
 strip_crlf(S) ->
     lists:reverse(strip_crlf1(lists:reverse(S))).

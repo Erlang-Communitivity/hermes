@@ -40,6 +40,8 @@ reply_line(Code, Text, false) ->
 reply_line(Code, Text, true) ->
     [integer_to_list(Code), "-", Text, "\r\n"].
 
+
+
 reply(Code, Text, State = #session{socket = Socket}) ->
     gen_tcp:send(Socket, reply_line(Code, Text, false)),
     State.
@@ -54,40 +56,6 @@ reset_buffers(State) ->
 		  forward_paths = [],
 		  data_buffer = []}.
 
-address_to_path(Address) ->
-    case regexp:match(Address, "[^@]+@") of
-	{match, 1, Length} ->
-	    {string:substr(Address, 1, Length - 1), string:substr(Address, Length + 1)};
-	_ ->
-	    Address
-    end.
-
-split_path_from_params(Str) ->
-    case regexp:match(Str, "<[^>]*>") of
-	{match, Start, Length} ->
-	    Address = string:substr(Str, Start + 1, Length - 2),
-	    Params = string:strip(string:substr(Str, Start + Length), left),
-	    {address_to_path(Address), Params};
-	_ ->
-	    case httpd_util:split(Str, " ", 2) of
-		{ok, [Address]} ->
-		    {address_to_path(Address), ""};
-		{ok, [Address, Params]} ->
-		    {address_to_path(Address), Params}
-	    end
-    end.
-
-parse_path_and_parameters(PrefixRegexp, Data) ->
-    case regexp:first_match(Data, PrefixRegexp) of
-	nomatch ->
-	    unintelligible;
-	{match, 1, Length} ->
-	    PathAndParams = string:strip(string:substr(Data, Length + 1), left),
-	    {Path, Params} = split_path_from_params(PathAndParams),
-	    {ok, Path, Params}
-    end.
-
-%% refactor out call_handler func to be seaprate, see if we get beter bbug that way
 
 
 %% event handler should return true if verified, false otherwise
@@ -153,7 +121,7 @@ handle_command("HELO", _ClientDomain, State) ->
 		    reset_buffers(State))};
 
 handle_command("MAIL", FromReversePathAndMailParameters, State) ->
-    case parse_path_and_parameters("[fF][rR][oO][mM]:", FromReversePathAndMailParameters) of
+    case smtp_util:parse_path_and_parameters("[fF][rR][oO][mM]:", FromReversePathAndMailParameters) of
 	unintelligible ->
 	    {noreply, reply(553, "Unintelligible reverse-path", State)};
 	{ok, Path, _Params} ->
@@ -168,7 +136,7 @@ handle_command("RCPT", ToForwardPathAndMailParameters,
 		ReversePath == undefined ->
 	    	{noreply, reply(503, "MAIL first", State)};
 		true ->
-	    	case parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
+	    	case smtp_util:parse_path_and_parameters("[tT][oO]:", ToForwardPathAndMailParameters) of
 				unintelligible ->
 		    		{noreply, reply(553, "Unintelligible forward-path", State)};
 				{ok, Path, _Params} ->
