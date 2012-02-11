@@ -38,3 +38,13 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+%%log_delivery(ReversePath, ForwardPaths, DataLines) ->
+%%    {rfc2822, Headers, BodyLines} = Message = rfc2822:parse(DataLines),
+%%    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n", [ReversePath, ForwardPaths, Message]),
+%%	{ok, Db} = couchdb_embedded:dbopen(?DBNAME, initial_docs()),
+%%	MailDocBody = {obj, Headers ++ [{body, list_to_tuple(BodyLines)}]},
+%%	MailDoc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = MailDocBody},
+%%	Options = [],
+%%	couch_db:save_docs(Db, [MailDoc], Options),
+%%  ok.

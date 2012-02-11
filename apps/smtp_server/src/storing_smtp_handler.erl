@@ -17,7 +17,7 @@ handle_event(Event, State) ->
 %  b) (return false until we enable use for outgoing mail), the reverse path has a User address match
 % We really need to use views, otherwise enum'ing docs has no cacheing and is big hit
 %
-handle_call({verify, ReversePath, {Name, Domain} = Path}, State) ->
+handle_call({verify, _ReversePath, {Name, Domain} = Path}, State) ->
 	PathLC = {string:to_lower(Name), string:to_lower(Domain)},
 	Result = smtp_server:doc_for_address(PathLC),
 	error_logger:info_msg("doc_for_address returned ~p", [Result]),

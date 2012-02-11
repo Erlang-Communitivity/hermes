@@ -45,11 +45,6 @@ reply_line(Code, Text, true) ->
 reply(Code, Text, State = #session{socket = Socket}) ->
     gen_tcp:send(Socket, reply_line(Code, Text, false)),
     State.
-
-reply_fn_for_socket(Socket) ->
-	fun (Code, Text) -> 
-		gen_tcp:send(Socket, [integer_to_list(Code), " ", Text, "\r\n"])
-	end.
 	
 reset_buffers(State) ->
     State#session{reverse_path = undefined,
@@ -201,19 +196,8 @@ handle_data_line(Line, State) ->
 accumulate_line(Line, State = #session{data_buffer = Buffer}) ->
     {noreply, State#session{data_buffer = [Line | Buffer]}}.
 
-deliver({M,F,A}, ReversePath, Mailboxes, DataLinesRev) ->
-    case catch apply(M, F, [ReversePath, Mailboxes, lists:reverse(DataLinesRev) | A]) of
-	{'EXIT', Reason} ->
-	    error_logger:error_msg("SMTP delivery callback failed: ~p", [Reason]),
-	    callback_failure;
-	Result -> Result
-    end.
-
 add_handler(Module) ->
   gen_event:add_handler(?MODULE, Module, []).
-
-notify(Event) ->
-  gen_event:notify(?MODULE, Event).
 
 %---------------------------------------------------------------------------
 

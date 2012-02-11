@@ -39,14 +39,8 @@ start() ->
 	
 stop() -> 
 	application:stop(?MODULE).
-	%%application:stop(couch).
 
 start(normal, []) ->
-	%%application:load(couch),
-	%%application:set_env(couch, {"Couch","DbRootDir"}, ?DATADIR),
-	%%application:set_env(couch, {"Couch","Port"}, ?PORT),
-	%%couch_server:start(),
-	couch_embedded:start(),
     {ok, Host} = application:get_env(listen_host),
     {ok, Port} = application:get_env(listen_port),
     {ok, Domain} = application:get_env(listen_domain),
@@ -62,18 +56,19 @@ stop(_State) ->
     ok.
 
 add_user(Name, Address, Roles) ->
-	RolesJson = list_to_tuple(Roles),
-	AddressesJson = {Address},
-	%% FIXME Should check for duplicates here!
-	Doc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = {obj, [
-		{"type", "user"},
-		{"username", Name},
-		{"addresses", AddressesJson},
-		{"added", erlang:universaltime() },
-		{"roles", RolesJson}
-	]}},
-	{ok, Db} = couch_embedded:dbopen(?DBNAME, []),
-	couch_db:save_docs(Db, [Doc], []).
+    RolesJson = list_to_tuple(Roles),
+    AddressesJson = {Address},
+    %% FIXME Should check for duplicates here!
+    
+    Doc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = {obj, [
+								       {"type", "user"},
+								       {"username", Name},
+								       {"addresses", AddressesJson},
+								       {"added", erlang:universaltime() },
+								       {"roles", RolesJson}
+								      ]}},
+    {ok, Db} = couch_embedded:dbopen(?DBNAME, []),
+    couch_db:save_docs(Db, [Doc], []).
 	
 populate_db() ->
 	add_user("Bill Barnhill", {"bill.barnhill","communitivity.com"}, ["admin", "user"]).
@@ -100,14 +95,5 @@ doc_for_address({Userid, Domain} = Address) ->
 	couch_db:enum_docs(Db, 0, Map_Fn, none).
 
 	
-%%log_delivery(ReversePath, ForwardPaths, DataLines) ->
-%%    {rfc2822, Headers, BodyLines} = Message = rfc2822:parse(DataLines),
-%%    io:format("SMTP delivery:~n - reverse path ~p~n - forward paths ~p~n - ~p~n", [ReversePath, ForwardPaths, Message]),
-%%	{ok, Db} = couchdb_embedded:dbopen(?DBNAME, initial_docs()),
-%%	MailDocBody = {obj, Headers ++ [{body, list_to_tuple(BodyLines)}]},
-%%	MailDoc = #doc{id = couch_util:new_uuid(), revs = ["0"], body = MailDocBody},
-%%	Options = [],
-%%	couch_db:save_docs(Db, [MailDoc], Options),
-%%  ok.
 	
 	
