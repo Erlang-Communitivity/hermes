@@ -17,9 +17,7 @@
 	close/1,
 	reply/2,
 	notify/4,
-	test/1,
-	attach_fsm/2,
-	detach_fsm/1]).
+	test/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -29,7 +27,7 @@
 
 -define(SERVER, ?MODULE). 
 
--record(state, {socket,fsm=none,cb=none}).
+-record(state, {socket, controller}).
 
 %%%===================================================================
 %%% API
@@ -42,11 +40,11 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(CallbackPid) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [CallbackPid], []).
+start_link(_Args) ->
+    gen_server:start_link(?MODULE, [], []).
 
-start(CallbackPid) ->
-    gen_server:start({local, ?SERVER}, ?MODULE, [CallbackPid], []).
+start(_Args) ->
+    gen_server:start(?MODULE, [], []).
 
 close(ServerSpec) ->
     gen_server:cast(ServerSpec, close).
@@ -56,10 +54,7 @@ notify(ServerSpec, NextState, PreviousState, TransitionInfo) ->
     gen_server:cast(ServerSpec, {next_state, NextState, PreviousState, TransitionInfo}).
 test(ServerSpec) ->
     gen_server:call(ServerSpec, test).
-attach_fsm(ServerSpec, FSM) ->
-    gen_server:cast(ServerSpec, {attach_fsm, FSM}).
-detach_fsm(ServerSpec) ->
-    gen_server:cast(ServerSpec, detach_fsm).
+
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -76,9 +71,9 @@ detach_fsm(ServerSpec) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([CallbackPid]) ->
-    say("initializing tcp_connection"),
-    {ok, #state{fsm=none, cb=CallbackPid},0 }.
+init([]) ->
+    ?SAY("initializing tcp_connection"),
+    {ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -99,8 +94,6 @@ handle_call(test, _From, State=#state{socket=Socket}) ->
 	{ok, _Mod} -> {reply, {ok, true}, State};
 	_ -> {reply, {ok, false}, State}
     end;
-handle_call(detach_fsm, _From, State=#state{fsm=FSM}) ->
-    {reply, {ok, FSM}, State#state{fsm=none}};
 handle_call(Request, _From, State) ->
     Error = {unknown_call, Request},
     {stop, Error, {error, Error}, State}.
@@ -116,25 +109,25 @@ handle_call(Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast(close, State=#state{socket=Socket}) ->
+handle_cast({tcp_do_close, Controller}, State=#state{socket=Socket}) ->
     gen_tcp:close(Socket),
     {noreply, State};
-handle_cast({reply, MessageText}, State=#state{socket=Socket}) ->
-    say("SEND >~p", [MessageText]),
-    gen_tcp:send(Socket, MessageText),
+handle_cast({tcp_do_send, Controller, MessageText}, State=#state{socket=Socket}) ->
+    ?SAY("SEND >~p", [MessageText]),
+    gen_tcp:send(Socket, MessageText++"\r\n"),
     {noreply, State};
-handle_cast({attach_fsm, FSM}, State) ->
-    {noreply, State#state{fsm=FSM}};
-handle_cast({socket_control_transferred, Socket}, State=#state{fsm=FSM}) ->
-    say("Got a socke transferred, FSM: ~p", [FSM]),
+handle_cast({set_controller, Controller}, State) ->
+    {noreply, State#state{controller=Controller}};
+handle_cast({socket_control_transferred, Socket}, State=#state{controller=Controller}) ->
+    ?SAY("Got a socke transferred, Controller: ~p", [Controller]),
     inet:setopts(Socket, [{active, true}]),
-    case FSM of
-	none -> ok;
-	_ -> gen_fsm:send_event(FSM, {tcp_opened, self()})
+    case Controller of
+	undefined -> erlang:throw({error,controller_not_set});
+	_ -> gen_server:cast(Controller, {tcp_opened, self()})
     end, 
     {noreply, State#state{socket=Socket}};
 handle_cast(Other, State) ->
-    say("unknown cast: ~w", [Other]),
+    ?SAY("unknown cast: ~w", [Other]),
     {noreply, State}.
 
 
@@ -148,25 +141,18 @@ handle_cast(Other, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({tcp, _Socket, Data}, State=#state{fsm=FSM}) ->
-    say("Got data: ~p", [Data]),
-    gen_fsm:send_event(FSM, {tcp, self(), Data}), 
+handle_info({tcp, _Socket, Data}, State=#state{controller=Controller}) ->
+    ?SAY("Got data: ~p", [Data]),
+    gen_server:cast(Controller, {tcp_data, self(), Data}),
     {noreply, State};
-handle_info({tcp_closed, _Socket}, State=#state{fsm=FSM}) ->
-    say("Got tcp_closed"),
-    gen_fsm:send_event(FSM, {tcp_closed, self()}), 
+handle_info({tcp_closed, _Socket}, State=#state{controller=Controller}) ->
+    ?SAY("Got tcp_closed"),
+    gen_server:cast(Controller, {tcp_closed, self()}),
     {noreply, State};
-handle_info({tcp_error, _Socket, Reason}, State=#state{fsm=FSM}) ->
-    say("Got error: ~p", [Reason]),
-    gen_fsm:send_event(FSM, {tcp_error, self(), Reason}), 
-    {stop, normal, State};
-handle_info(timeout, State=#state{cb=Callback}) ->
-    say("Got timeout"),
-    Callback ! {up, ?MODULE, self()},
-    {noreply, State}.
-
-
-
+handle_info({tcp_error, _Socket, Reason}, State=#state{controller=Controller}) ->
+    ?SAY("Got error: ~p", [Reason]),
+    gen_server:cast(Controller, {tcp_error, self(), Reason}),
+    {stop, normal, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -179,8 +165,8 @@ handle_info(timeout, State=#state{cb=Callback}) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, #state{socket=Socket}) ->
-    say("terminate called"),
+terminate(Reason, #state{socket=Socket}) ->
+    ?SAY("terminate called with reason ~p", [Reason]),
     gen_tcp:close(Socket),
     ok.
 
@@ -198,8 +184,3 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-say(Msg) ->
-    io:format("~p:~p > ~p~n",[?FILE,?LINE,Msg]).
-say(Format, Args) ->
-    io:format("~p:~p > "++Format++"~n",[?FILE,?LINE]++Args).

@@ -3,13 +3,26 @@
   {vsn, "0.0"},
   {modules,[
 	    generic_tcp_server,
-	    smtp_server,
-	    smtp_server_session
+	    gen_fsm2,
+	    gen_nb_fsm_server,
+	    gen_nb_server,
+	    smtp_connection_fsm
 	   ]},
   {applications,[kernel,stdlib]},
-  {mod, {smtp_server, []}},
-  {env, [{listen_host, "0.0.0.0"},
-	 {listen_port, 25},
-	 {listen_domain, "localhost"}
-        ]}
- ]}.
+  {mod, {smtp_server_app, []}},
+  {env, [{smtp_ipaddr, "0.0.0.0"},
+	 {smtp_port, 2525},
+	 {pools, [
+	 	 {conn_pool, [
+		 	     {name, "conn_pool"},
+			     {worker_module, tcp_connection},
+		  	     {size, 10},  
+                	     {max_overflow, 20}]},
+		  {fsm_pool, [
+		 	     {name, "conn_pool"},
+			     {worker_module, tcp_connection},
+		  	     {size, 10},  
+                	     {max_overflow, 20}]}
+		    ]}
+             ]}
+]}.

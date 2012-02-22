@@ -11,15 +11,17 @@
 -behaviour(gen_nb_server).
 
 %% API
--export([start_link/5,start/5,stop/0]).
+-export([start_link/2,start/2,stop/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-	 terminate/2, code_change/3,sock_opts/0, new_connection/2, initializer/4]).
+	 terminate/2, code_change/3,sock_opts/0, new_connection/2]).
+
+-include("smtp_server.hrl").
 
 -define(SERVER, ?MODULE). 
 
--record(state, {ipaddr, port, fsm_module,connection_module,callback, listening=false}).
+-record(state, {ipaddr, port, connection, fsm, listening=false}).
 
 %%%===================================================================
 %%% API
@@ -32,11 +34,15 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link(IpAddr, Port, ModuleFSM, ModuleConnection, CallbackPid) ->
-    gen_nb_server:start_link(?MODULE, IpAddr, Port, [IpAddr, Port, ModuleFSM, ModuleConnection, CallbackPid]).
+start_link(normal, []) ->
+    {ok, IpAddr} = get_env(smtp_ipaddr, "0.0.0.0"),
+    {ok, Port} = get_env(smtp_port, 2525),
+    gen_nb_server:start_link(?MODULE, IpAddr, Port, [IpAddr, Port]).
 
-start(IpAddr, Port, ModuleFSM, ModuleConnection, CallbackPid) ->
-    gen_nb_server:start(?MODULE, IpAddr, Port, [IpAddr, Port, ModuleFSM, ModuleConnection, CallbackPid]).
+start(normal, []) ->
+    {ok, IpAddr} = get_env(smtp_ipaddr, "0.0.0.0"),
+    {ok, Port} = get_env(smtp_port, 2525),
+    gen_nb_server:start(?MODULE, IpAddr, Port, [IpAddr, Port]).
 
 stop() ->
     gen_server:cast(?MODULE, stop).
@@ -44,6 +50,31 @@ stop() ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
+
+%% This function allows getting the env variable from a parent level
+%% if it's not found in the current application. Only one level is searched.
+%% This needs to get refactored out of modules into its own module
+get_env(Key, Default) ->
+    case application:get_env(Key) of
+	{ok, Value} -> {ok, Value};
+	undefined ->
+	    case application:get_env(parent_app) of
+		{ok, ParentApp} ->
+		    case application:get_env(ParentApp, Key) of
+			{ok, Value} -> {ok, Value};
+			undefined -> 
+			    case Default of
+				undefined -> undefined;
+				_ -> {ok, Default}
+			    end
+		    end;
+		undefined -> 
+		    case Default of
+			undefined -> undefined;
+			_ -> {ok, Default}
+		    end
+	    end
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -56,8 +87,8 @@ stop() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([IpAddr, Port, ModuleFSM, ModuleConnection, CallbackPid]) ->
-    {ok, #state{ipaddr=IpAddr,port=Port,fsm_module=ModuleFSM,connection_module=ModuleConnection,callback=CallbackPid},0}.
+init([IpAddr, Port]) ->
+    {ok, #state{ipaddr=IpAddr,port=Port}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -102,18 +133,6 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info(timeout, State=#state{listening=true,callback=CallbackPid}) ->
-    CallbackPid ! {up, ?MODULE, self()},
-    {noreply, State};
-%%handle_info(timeout, State=#state{ipaddr=_IpAddr,port=_Port}) ->
-    %% below is from Knutin's version of gen_nb_server, which allows multiple ports, IP addresses
-    %%case gen_nb_server:add_listen_socket({IpAddr, Port}, State) of
-    %%    {ok, State1} ->
-    %%        {noreply, State1#state{listening=true}, 0};
-    %%    Error ->
-    %%        {stop, Error, {error, Error}, State}
-    %%end;
-%%    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -149,47 +168,31 @@ sock_opts() ->
      {reuseaddr, true}].
 
 new_connection(Socket, State) ->
-    say("got new connection"),
-    %fsm_module,connection_module
-    ModuleFSM = State#state.fsm_module,
-    ModuleConn = State#state.connection_module,
-    Initializer = spawn(fun() -> initializer(Socket, ModuleConn, none, none) end),
-    {ok, _FSM } = ModuleFSM:start(Initializer),
-    {ok, _Connection } = ModuleConn:start(Initializer),
-    case gen_tcp:controlling_process(Socket, Initializer) of
-	ok -> say("transfer successful to initializer process"),
+    ?SAY("got new connection"),
+    Connection = case poolboy:checkout(conn_pool) of
+		     ConnWorkerPid when is_pid(ConnWorkerPid) -> ConnWorkerPid;
+		     ConnOther -> erlang:throw(ConnOther)
+		 end,
+    FSM = case poolboy:checkout(fsm_pool) of
+		     FSMWorkerPid when is_pid(FSMWorkerPid) -> FSMWorkerPid;
+		     FSMOther -> erlang:throw(FSMOther)
+		 end,
+    Controller = case poolboy:checkout(controller_pool) of
+		     ControllerPid when is_pid(ControllerPid) -> ControllerPid;
+		     ControllerOther -> erlang:throw(ControllerOther)
+		 end,
+    gen_server:cast(Controller, {attach_fsm, FSM}),
+    gen_server:cast(Controller, {attach_connection, Connection}),
+    gen_server:cast(Connection, {set_controller, Controller}),
+    gen_fsm2:send_all_state_event(FSM, {set_controller, Controller}),
+    case gen_tcp:controlling_process(Socket, Connection) of
+	ok -> ?SAY("transfer successful to TCP connection handler process"),
+	      gen_server:cast(Connection, {socket_control_transferred, Socket}),
 	      {ok, State};
-	{error, Reason} -> say("Error during transfer: ~p", [Reason]), 
+	{error, Reason} -> ?SAY("Error during transfer: ~p", [Reason]), 
 			   {error, Reason, State}
     end.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-initializer(Socket,ModuleConn, FSM, Connection) ->
-    say("+initializer FSM:~p Connection:~p", [FSM, Connection]),
-    if
-	(FSM /= none) and (Connection /= none) ->
-	    say("both tcp_connection and FSM are up, so let's transfer socket control"),
-	    ModuleConn:attach_fsm(Connection, FSM),
-	    case gen_tcp:controlling_process(Socket, Connection) of
-		ok -> say("transfer successful to tcp_connection instance"),
-		      gen_server:cast(Connection, {socket_control_transferred, Socket}),
-		      ok;
-		{error, Reason} -> say("Error during transfer: ~p", [Reason]), 
-				   {error, Reason}
-	    end;
-	true ->
-	    receive
-		{up, tcp_connection, Connection2} -> initializer(Socket, ModuleConn, FSM, Connection2);	
-		{up, _ModuleFSM, FSM2} -> initializer(Socket, ModuleConn, FSM2, Connection);
-		Other -> say("Received unexpected: ~w", [Other])
-	    end
-    end.
-    
-
-say(Msg) ->
-    io:format("~p:~p > ~p~n",[?FILE,?LINE,Msg]).
-say(Format, Args) ->
-    io:format("~p:~p > "++Format++"~n",[?FILE,?LINE]++Args).
